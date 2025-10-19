@@ -74,6 +74,9 @@ This app works with **any RAG API** that follows standard patterns. Examples:
 - Deploy `index.html` to GitHub Pages, Netlify, Vercel, etc.
 - Works out of the box!
 
+#### Option C: Use My Hosted one
+- Visit https://rag-chat-dk0.pages.dev/ 
+- Use.
 ---
 
 ### 3. **Using the Interface**
