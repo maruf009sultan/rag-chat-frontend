@@ -141,7 +141,7 @@ const CORS_PROXY = "https://your-proxy.com/?u=";
 
 ## 🧪 Testing Locally
 
-Want to test without a real API? Use a mock service like [Mocky](https://designer.mocky.io/):
+Want to test without a real API? Use a mock service:
 
 1. Create a mock endpoint that returns:
    ```json
@@ -168,4 +168,3 @@ MIT — feel free to use, modify, and embed in your projects!
 
 > ✨ **Built for developers, analysts, and AI tinkerers who want full control — without backend hassle.**
 ```
-it!
