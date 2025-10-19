@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>RAG Chat (Local History + Sidebar)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { --bg:#0b0d12; --card:#121620; --muted:#1a2030; --text:#e7ebf2; --sub:#aab3c4; --accent:#6aa2ff; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font: 14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      display: grid; grid-template-rows: auto 1fr auto; height: 100vh;
+    }
+    header {
+      padding: 10px 14px; border-bottom: 1px solid var(--muted);
+      background: linear-gradient(180deg, rgba(255,255,255,0.03), transparent);
+      display: grid; gap: 8px; grid-template-columns: 1fr auto auto auto;
+    }
+    header input {
+      width: 100%; padding: 10px 12px; border: 1px solid var(--muted); border-radius: 10px;
+      background: var(--card); color: var(--text); outline: none;
+    }
+    header input::placeholder { color: var(--sub); }
+    header .btn {
+      background: var(--accent); color: #071324; border: none; padding: 10px 14px; border-radius: 10px; cursor: pointer; font-weight: 600;
+    }
+    #container {
+      display: grid; grid-template-columns: 0px 1fr; transition: grid-template-columns 0.3s;
+    }
+    #sidebar {
+      background: #0e131c; border-right: 1px solid var(--muted);
+      overflow-y: auto; transition: width 0.3s;
+    }
+    #sidebar h3 {
+      padding: 10px; margin: 0; font-size: 14px; color: var(--sub); border-bottom: 1px solid var(--muted);
+    }
+    .chat-link {
+      padding: 10px; cursor: pointer; border-bottom: 1px solid var(--muted);
+      color: var(--text); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .chat-link:hover { background: var(--card); }
+    #chat {
+      padding: 18px; overflow-y: auto; background:
+      radial-gradient(1200px 60% at 80% -10%, rgba(106,162,255,0.08), transparent 60%),
+      radial-gradient(900px 60% at 0% -10%, rgba(106,255,195,0.06), transparent 60%);
+    }
+    .bubble {
+      max-width: min(720px, 85%); padding: 12px 14px; border-radius: 14px; margin: 8px 0;
+      white-space: pre-wrap; word-wrap: break-word; box-shadow: 0 6px 18px rgba(0,0,0,0.15);
+    }
+    .user { margin-left: auto; background: #1d2a44; border: 1px solid #273a64; }
+    .bot  { margin-right: auto; background: var(--card); border: 1px solid var(--muted); }
+    .sources { margin-top: 8px; font-size: 12px; color: var(--sub); }
+    .sources a { color: var(--accent); text-decoration: none; }
+    #inputBar {
+      display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 12px; border-top: 1px solid var(--muted); background: #0c1018;
+    }
+    #message {
+      padding: 12px 14px; border: 1px solid var(--muted); border-radius: 12px; background: var(--card); color: var(--text); outline: none;
+    }
+    #send { background: var(--accent); color: #071324; border: none; padding: 12px 18px; border-radius: 12px; font-weight: 700; cursor: pointer; }
+    .spinner {
+      display:inline-block; width:14px; height:14px; border:2px solid var(--sub); border-top-color: transparent; border-radius:50%;
+      animation: spin 0.8s linear infinite; vertical-align: text-bottom; margin-right: 6px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <header>
+    <input id="apiUrl" type="text" placeholder="Full API URL (e.g., https://api.example.com/endpoint)" />
+    <input id="token" type="password" placeholder="API Token (Bearer)" />
+    <button id="save" class="btn">Save</button>
+    <button id="newChat" class="btn">New Chat</button>
+    <button id="toggleSidebar" class="btn">☰</button>
+  </header>
+
+  <div id="container">
+    <aside id="sidebar" style="width:0">
+      <h3>Past Chats</h3>
+      <div id="chatList"></div>
+    </aside>
+    <main id="chat" aria-live="polite"></main>
+  </div>
+
+  <div id="inputBar">
+    <textarea id="message" rows="2" placeholder="Ask something… (Shift+Enter for newline)"></textarea>
+    <button id="send">Send</button>
+  </div>
+
+  <script>
+    const els = {
+      apiUrl: document.getElementById('apiUrl'),
+      token: document.getElementById('token'),
+      save: document.getElementById('save'),
+      newChat: document.getElementById('newChat'),
+      toggleSidebar: document.getElementById('toggleSidebar'),
+      chat: document.getElementById('chat'),
+      msg: document.getElementById('message'),
+      send: document.getElementById('send'),
+      sidebar: document.getElementById('sidebar'),
+      chatList: document.getElementById('chatList'),
+      container: document.getElementById('container')
+    };
+
+    const CORS_PROXY = "https://cors.jammesop007.workers.dev/?u=";
+
+    let history = [];
+    let chatId = Date.now().toString();
+
+    // Load settings
+    (() => {
+      els.apiUrl.value = localStorage.getItem('api_url') || '';
+    })();
+
+    els.save.addEventListener('click', () => {
+      localStorage.setItem('api_url', els.apiUrl.value.trim());
+      toast("Saved settings.");
+    });
+
+    // ---------------- History Persistence ----------------
+    function saveChatHistory() {
+      const allChats = JSON.parse(localStorage.getItem('chats') || "{}");
+      allChats[chatId] = { history, created: allChats[chatId]?.created || Date.now() };
+      localStorage.setItem('chats', JSON.stringify(allChats));
+      renderSidebar();
+    }
+    function loadChatHistory(id) {
+      const allChats = JSON.parse(localStorage.getItem('chats') || "{}");
+      return allChats[id]?.history || [];
+    }
+    function renderSidebar() {
+      const allChats = JSON.parse(localStorage.getItem('chats') || "{}");
+      els.chatList.innerHTML = "";
+      Object.entries(allChats)
+        .sort((a,b)=>b[1].created - a[1].created)
+        .forEach(([id, data]) => {
+          const div = document.createElement('div');
+          div.className = "chat-link";
+          const preview = data.history?.find(h=>h.role==="user")?.content || "(empty)";
+          div.textContent = new Date(data.created).toLocaleString() + " – " + preview.slice(0,30);
+          div.onclick = () => {
+            chatId = id;
+            history = loadChatHistory(id);
+            els.chat.innerHTML = "";
+            history.forEach(h => bubble(h.content, h.role));
+          };
+          els.chatList.appendChild(div);
+        });
+    }
+    renderSidebar();
+
+    // ---------------- UI helpers ----------------
+    function bubble(text, role, extras=null) {
+      const wrap = document.createElement('div');
+      wrap.className = 'bubble ' + (role==='user'?'user':'bot');
+      wrap.textContent = text;
+      els.chat.appendChild(wrap);
+      if (extras?.sources?.length) {
+        const srcDiv = document.createElement('div');
+        srcDiv.className = 'sources';
+        srcDiv.innerHTML = 'Sources: ' + extras.sources.map(s=>`<a href="${s}" target="_blank">${s}</a>`).join(" · ");
+        wrap.appendChild(srcDiv);
+      }
+      els.chat.scrollTop = els.chat.scrollHeight;
+      return wrap;
+    }
+    function spinnerBubble() {
+      const wrap = document.createElement('div');
+      wrap.className = 'bubble bot';
+      wrap.innerHTML = `<span class="spinner"></span>Thinking…`;
+      els.chat.appendChild(wrap);
+      els.chat.scrollTop = els.chat.scrollHeight;
+      return wrap;
+    }
+    function toast(t) {
+      const b = bubble(t,'bot'); b.style.fontSize="12px"; setTimeout(()=>b.remove(),1500);
+    }
+
+    // ---------------- Conversation mgmt ----------------
+    function clampHistory(maxTokens=20000) {
+      let total=0;
+      for(let i=history.length-1;i>=0;i--){
+        total += (history[i].content.split(/\s+/).length);
+        if(total>maxTokens){ history=history.slice(i+1); break;}
+      }
+    }
+    function buildQuery(userText) {
+      clampHistory();
+      const convo = history.map(h=>`${h.role}: ${h.content}`).join("\n");
+      return `You are a RAG assistant. Answer using retrieved docs only.
+
+Conversation so far:
+${convo}
+
+User's latest query:
+${userText}`;
+    }
+
+    // ---------------- Networking ----------------
+    async function ragSearch(query) {
+      const urlInput = els.apiUrl.value.trim();
+      const token = els.token.value.trim();
+      if(!urlInput) throw new Error("Missing API URL");
+      if(!token) throw new Error("Missing API Token");
+      
+      // Validate URL format
+      try {
+        new URL(urlInput);
+      } catch (e) {
+        throw new Error("Invalid API URL format");
+      }
+      
+      const fullUrl = CORS_PROXY + encodeURIComponent(urlInput);
+      const res = await fetch(fullUrl, {
+        method: "POST",
+        headers: { 
+          "Content-Type": "application/json",
+          "Authorization": "Bearer " + token 
+        },
+        body: JSON.stringify({ query })
+      });
+      if(!res.ok) throw new Error("HTTP " + res.status);
+      return res.json();
+    }
+    function parseResp(json){
+      const r=json?.result||json;
+      let ans=r?.answer||r?.output||r?.response||r?.text||(typeof r==="string"?r:JSON.stringify(r));
+      const urls=[]; const push=u=>/^https?:/.test(u)&&urls.push(u);
+      (r?.sources||[]).forEach(s=>push(s?.url||s?.link));
+      return {answer:ans,sources:[...new Set(urls)]};
+    }
+
+    // ---------------- Flow ----------------
+    async function handleSend(){
+      const text=els.msg.value.trim(); if(!text) return;
+      bubble(text,"user");
+      history.push({role:"user",content:text}); saveChatHistory();
+      els.msg.value="";
+      const thinking=spinnerBubble();
+      try{
+        const query=buildQuery(text);
+        const j=await ragSearch(query);
+        const {answer,sources}=parseResp(j);
+        thinking.remove(); bubble(answer,"bot",{sources});
+        history.push({role:"assistant",content:answer}); saveChatHistory();
+      }catch(e){ thinking.remove(); bubble("❌ "+e.message,"bot"); }
+    }
+
+    els.send.addEventListener("click",handleSend);
+    els.msg.addEventListener("keydown",e=>{
+      if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();handleSend();}
+    });
+    els.newChat.addEventListener("click",()=>{
+      chatId=Date.now().toString(); history=[]; els.chat.innerHTML=""; bubble("🆕 New conversation","bot"); saveChatHistory();
+    });
+    els.toggleSidebar.addEventListener("click",()=>{
+      if(els.sidebar.style.width==="0px"){ 
+        els.sidebar.style.width="220px"; 
+        els.container.style.gridTemplateColumns="220px 1fr";
+      } else { 
+        els.sidebar.style.width="0"; 
+        els.container.style.gridTemplateColumns="0px 1fr";
+      }
+    });
+
+    // welcome
+    bubble("Hi! Enter Full API URL & Bearer Token, then ask questions. Conversations auto-trim (~20k tokens) and are saved locally. Use ☰ to view past chats.","bot");
+  </script>
+</body>
+</html>
